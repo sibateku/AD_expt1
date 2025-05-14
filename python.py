@@ -1,0 +1,179 @@
+import time, csv, requests
+import numpy as np
+import matplotlib.pyplot as plt
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+import pandas as pd
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, LSTM, RepeatVector, TimeDistributed, Dense
+from sklearn.preprocessing import MinMaxScaler
+import urllib.request
+import json
+
+# ====== 1. データ取得 ======
+JST = timezone(timedelta(hours=9))
+dt_now = datetime.now(JST)
+dt_midnight = datetime(dt_now.year, dt_now.month, dt_now.day, tzinfo=JST)
+unix = int(dt_midnight.timestamp())
+
+data = []
+timestamps = []
+
+for i in range(30):  # 過去30日分
+    tt = unix - 3600 * 24 * (7 - i)
+    res = requests.get(
+        f'https://airoco.necolico.jp/data-api/day-csv?id=CgETViZ2&subscription-key=6b8aa7133ece423c836c38af01c59880&startDate={tt}')
+    raw_data = csv.reader(res.text.strip().splitlines())
+    for row in raw_data:
+        if row[1] == 'Ｒ３ーB１Ｆ_ＥＨ':
+            try:
+                data.append(float(row[3]))  # CO₂濃度
+                timestamps.append(datetime.strptime(row[0], "%Y/%m/%d %H:%M:%S"))
+            except:
+                continue
+
+co2 = np.array(data)
+timestamps = pd.to_datetime(timestamps)
+
+# ====== 2. 差分 + 時刻エンコード + 曜日エンコード ======
+diffs = np.diff(co2)
+timestamps = timestamps[1:]
+
+hours = timestamps.hour + timestamps.minute / 60
+sin_time = np.sin(2 * np.pi * hours / 24)
+cos_time = np.cos(2 * np.pi * hours / 24)
+
+weekdays = timestamps.weekday
+sin_wday = np.sin(2 * np.pi * weekdays / 7)
+cos_wday = np.cos(2 * np.pi * weekdays / 7)
+
+min_len = min(len(diffs), len(sin_time), len(cos_time), len(sin_wday), len(cos_wday))
+diffs = diffs[:min_len]
+sin_time = sin_time[:min_len]
+cos_time = cos_time[:min_len]
+sin_wday = sin_wday[:min_len]
+cos_wday = cos_wday[:min_len]
+
+features = np.stack([diffs, sin_time, cos_time, sin_wday, cos_wday], axis=1)
+
+# ====== 3. 正規化 ======
+scaler_diff = MinMaxScaler()
+features[:, 0:1] = scaler_diff.fit_transform(features[:, 0:1])  # 差分のみスケーリング
+
+# ====== 4. スライディングウィンドウで学習データ準備 ======
+X, y = [], []
+window_in, window_out = 143, 144  # 入力と出力長
+
+for i in range(0, len(features) - (window_in + window_out)):
+    X.append(features[i:i+window_in])
+    y.append(features[i+window_in:i+window_in+window_out, 0])  # 出力はCO₂差分だけ
+
+X = np.array(X)
+y = np.array(y).reshape(-1, window_out, 1)
+
+# ====== 5. モデル構築 ======
+input_seq = Input(shape=(window_in, 5))  # 入力次元数変更
+encoded = LSTM(64, activation='relu')(input_seq)
+decoded = RepeatVector(window_out)(encoded)
+decoded = LSTM(64, activation='relu', return_sequences=True)(decoded)
+output_seq = TimeDistributed(Dense(1))(decoded)
+
+model = Model(input_seq, output_seq)
+model.compile(optimizer='adam', loss='mse')
+model.summary()
+
+# ====== 6. モデル学習 ======
+model.fit(X, y, epochs=1, batch_size=8, verbose=1)
+
+# ====== 7. 今日のデータ取得・整形 ======
+res = requests.get(
+    f'https://airoco.necolico.jp/data-api/day-csv?id=CgETViZ2&subscription-key=6b8aa7133ece423c836c38af01c59880&startDate={unix}')
+raw_data = csv.reader(res.text.strip().splitlines())
+
+curr_data = []
+curr_times = []
+
+for row in raw_data:
+    if row[1] == 'Ｒ３ーB１Ｆ_ＥＨ':
+        try:
+            curr_data.append(float(row[3]))
+            curr_times.append(datetime.strptime(row[0], "%Y/%m/%d %H:%M:%S"))
+        except:
+            continue
+
+curr_data = np.array(curr_data)
+curr_times = pd.to_datetime(curr_times)
+
+# ====== 8. 差分 + 時刻 + 曜日エンコード ======
+curr_diff = np.diff(curr_data)
+curr_times = curr_times[1:]
+
+curr_hours = curr_times.hour + curr_times.minute / 60
+curr_sin = np.sin(2 * np.pi * curr_hours / 24)
+curr_cos = np.cos(2 * np.pi * curr_hours / 24)
+
+curr_weekdays = curr_times.weekday
+curr_sin_wday = np.sin(2 * np.pi * curr_weekdays / 7)
+curr_cos_wday = np.cos(2 * np.pi * curr_weekdays / 7)
+
+min_len = min(len(curr_diff), len(curr_sin), len(curr_cos), len(curr_sin_wday), len(curr_cos_wday))
+curr_diff = curr_diff[:min_len]
+curr_sin = curr_sin[:min_len]
+curr_cos = curr_cos[:min_len]
+curr_sin_wday = curr_sin_wday[:min_len]
+curr_cos_wday = curr_cos_wday[:min_len]
+
+curr_features = np.stack([curr_diff, curr_sin, curr_cos, curr_sin_wday, curr_cos_wday], axis=1)
+curr_features[:, 0:1] = scaler_diff.transform(curr_features[:, 0:1])
+
+# ====== 9. 入力ベクトル整形（不足分ゼロ埋め）=====
+input_seq = np.zeros((1, window_in, 5))
+length = min(len(curr_features), window_in)
+input_seq[0, -length:, :] = curr_features[-length:]
+
+# ====== 10. 予測 & 元に戻す ======
+pred_scaled = model.predict(input_seq).flatten()
+pred_diff = scaler_diff.inverse_transform(pred_scaled.reshape(-1, 1)).flatten()
+
+start_val = curr_data[-1]
+predicted = np.cumsum(np.insert(pred_diff, 0, start_val))[1:]
+
+# ====== 11. 可視化 ======
+full_series = np.concatenate([curr_data, predicted])
+time_series = pd.date_range(start=dt_midnight, periods=len(full_series), freq='5T')
+
+plt.figure(figsize=(12, 6))
+plt.plot(time_series[:len(curr_data)], curr_data, label='Observed CO₂')
+plt.plot(time_series[len(curr_data):], predicted, label='Predicted CO₂ (with time & weekday info)', linestyle='--')
+plt.xlabel('Time')
+plt.ylabel('CO₂ Concentration [ppm]')
+plt.title('CO₂ Forecast with Time & Weekday Features')
+plt.xticks(rotation=45)
+plt.grid()
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+# ====== JSONデータ作成 ======
+json_data = [
+    {"timestamp": t.isoformat(), "predicted_co2": float(p)}
+    for t, p in zip(time_series[len(curr_data):], predicted)
+]
+
+# JSON文字列にエンコード
+json_str = json.dumps(json_data).encode('utf-8')
+
+# ====== HTTPリクエストを準備してPOST ======
+url = "https://stunning-umbrella-5gqj5r4pq5rwc4wv5-1880.app.github.dev/predicted"  # ← あなたのNode-REDエンドポイントに書き換えてください
+headers = {"Content-Type": "application/json"}
+
+request = urllib.request.Request(url, data=json_str, method="POST", headers=headers)
+
+try:
+    with urllib.request.urlopen(request) as response:
+        response_body = response.read().decode("utf-8")
+        print("Response:", response_body)
+except urllib.error.HTTPError as e:
+    print("HTTP Error:", e.code, e.reason)
+except urllib.error.URLError as e:
+    print("URL Error:", e.reason)
