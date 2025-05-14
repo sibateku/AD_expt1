@@ -2,18 +2,23 @@ import time, csv, requests
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 import pandas as pd
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, LSTM, RepeatVector, TimeDistributed, Dense
 from sklearn.preprocessing import MinMaxScaler
 import urllib.request
 import json
+import pytz
+from datetime import datetime
 
 # ====== 1. データ取得 ======
-JST = timezone(timedelta(hours=9))
+# 日本標準時 (JST) を pytz で指定
+JST = pytz.timezone('Asia/Tokyo')
+# 現在の日時を取得
 dt_now = datetime.now(JST)
+# 今日の真夜中 (0時) を取得
 dt_midnight = datetime(dt_now.year, dt_now.month, dt_now.day, tzinfo=JST)
+# 真夜中のタイムスタンプ（Unix timestamp）を取得
 unix = int(dt_midnight.timestamp())
 
 data = []
