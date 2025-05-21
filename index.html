@@ -3,15 +3,16 @@
 <head>
   <meta charset="UTF-8">
   <title>CO2濃度グラフ</title>
+  <!-- chart.jsの読み込み（グラフ描画のライブラリ） -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     body {
-        margin: 0;
-        padding: 0;
+      margin: 0;
+      padding: 0;
     }
     h1 {
-        text-align: center;
-        margin: 16px 0;
+      text-align: center;
+      margin: 16px 0;
     }
     #alert {
       text-align: center;
@@ -19,25 +20,25 @@
       margin-bottom: 16px;
     }
     #chart-container {
-        width: 80%;
-        height: 80vh;
-        margin: 0 auto;
-        padding: 0 20px;
-        box-sizing: border-box;
+      width: 80%;
+      height: 80vh;
+      margin: 0 auto;
+      padding: 0 20px;
+      box-sizing: border-box;
     }
     canvas {
-        width: 100% !important;
-        height: 100% !important;
+      width: 100% !important;
+      height: 100% !important;
     }
   </style>
 </head>
 
 <body>
   <h1>CO2濃度の推移</h1>
-  <div id="alert"></div>
-  <div id="chart-container">
+  <div id="alert"></div> <!-- しきい値との比較結果を表示 -->
+  <div id="chart-container"> <!-- グラフを表示 -->
     <canvas id="co2Chart"></canvas>
   </div>
-  <script src="./test.js"></script>
+  <script src="./script.js"></script>
 </body>
 </html>
