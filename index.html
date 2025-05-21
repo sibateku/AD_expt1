@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>CO2濃度グラフ</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body {
+        margin: 0;
+        padding: 0;
+    }
+    h1 {
+        text-align: center;
+        margin: 16px 0;
+    }
+    #chart-container {
+        width: 80%;
+        height: 80vh;
+        margin: 0 auto;
+        padding: 0 20px;
+        box-sizing: border-box;
+    }
+    canvas {
+        width: 100% !important;
+        height: 100% !important;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>CO2濃度の推移</h1>
+  <div id="alert" style="text-align: center; font-size: 1.2rem; margin-bottom: 16px;"></div>
+  <div id="chart-container">
+    <canvas id="co2Chart"></canvas>
+  </div>
+  <script src="./script.js"></script>
+</body>
+</html>

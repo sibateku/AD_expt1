@@ -1,0 +1,7 @@
+pythonでロカールに簡易サーバを建てる方法
+手順
+１，エクスプローラーでフォルダを開く
+２，アドレスバーに「cmd」と入力
+３，「python -m http.server 8000」と入力
+
+４，Google Chromeで「http://localhost:8000」と入力
