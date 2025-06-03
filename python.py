@@ -2,23 +2,17 @@ import time, csv, requests
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import pandas as pd
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, LSTM, RepeatVector, TimeDistributed, Dense
 from sklearn.preprocessing import MinMaxScaler
 import urllib.request
-import json
-import pytz
-from datetime import datetime
 
-# ====== 1. データ取得 ======
-# 日本標準時 (JST) を pytz で指定
-JST = pytz.timezone('Asia/Tokyo')
-# 現在の日時を取得
+# 1. データ取得
+JST = timezone(timedelta(hours=9))
 dt_now = datetime.now(JST)
-# 今日の真夜中 (0時) を取得
 dt_midnight = datetime(dt_now.year, dt_now.month, dt_now.day, tzinfo=JST)
-# 真夜中のタイムスタンプ（Unix timestamp）を取得
 unix = int(dt_midnight.timestamp())
 
 data = []
@@ -40,7 +34,7 @@ for i in range(30):  # 過去30日分
 co2 = np.array(data)
 timestamps = pd.to_datetime(timestamps)
 
-# ====== 2. 差分 + 時刻エンコード + 曜日エンコード ======
+# 2. 差分エンコード + 時刻エンコード + 曜日エンコード
 diffs = np.diff(co2)
 timestamps = timestamps[1:]
 
@@ -61,11 +55,11 @@ cos_wday = cos_wday[:min_len]
 
 features = np.stack([diffs, sin_time, cos_time, sin_wday, cos_wday], axis=1)
 
-# ====== 3. 正規化 ======
+# 3. 正規化
 scaler_diff = MinMaxScaler()
 features[:, 0:1] = scaler_diff.fit_transform(features[:, 0:1])  # 差分のみスケーリング
 
-# ====== 4. スライディングウィンドウで学習データ準備 ======
+# 4. スライディングウィンドウの設計
 X, y = [], []
 window_in, window_out = 143, 144  # 入力と出力長
 
@@ -76,8 +70,8 @@ for i in range(0, len(features) - (window_in + window_out)):
 X = np.array(X)
 y = np.array(y).reshape(-1, window_out, 1)
 
-# ====== 5. モデル構築 ======
-input_seq = Input(shape=(window_in, 5))  # 入力次元数変更
+# 5. モデル構築
+input_seq = Input(shape=(window_in, 5))
 encoded = LSTM(64, activation='relu')(input_seq)
 decoded = RepeatVector(window_out)(encoded)
 decoded = LSTM(64, activation='relu', return_sequences=True)(decoded)
@@ -87,10 +81,10 @@ model = Model(input_seq, output_seq)
 model.compile(optimizer='adam', loss='mse')
 model.summary()
 
-# ====== 6. モデル学習 ======
-model.fit(X, y, epochs=1, batch_size=8, verbose=1)
+# 6. モデル学習
+model.fit(X, y, epochs=10, batch_size=8, verbose=1)
 
-# ====== 7. 今日のデータ取得・整形 ======
+# 7. 今日のデータ取得・整形
 res = requests.get(
     f'https://airoco.necolico.jp/data-api/day-csv?id=CgETViZ2&subscription-key=6b8aa7133ece423c836c38af01c59880&startDate={unix}')
 raw_data = csv.reader(res.text.strip().splitlines())
@@ -109,7 +103,7 @@ for row in raw_data:
 curr_data = np.array(curr_data)
 curr_times = pd.to_datetime(curr_times)
 
-# ====== 8. 差分 + 時刻 + 曜日エンコード ======
+# 8. 差分 + 時刻 + 曜日
 curr_diff = np.diff(curr_data)
 curr_times = curr_times[1:]
 
@@ -131,19 +125,19 @@ curr_cos_wday = curr_cos_wday[:min_len]
 curr_features = np.stack([curr_diff, curr_sin, curr_cos, curr_sin_wday, curr_cos_wday], axis=1)
 curr_features[:, 0:1] = scaler_diff.transform(curr_features[:, 0:1])
 
-# ====== 9. 入力ベクトル整形（不足分ゼロ埋め）=====
+# 9. 入力ベクトル整形
 input_seq = np.zeros((1, window_in, 5))
 length = min(len(curr_features), window_in)
 input_seq[0, -length:, :] = curr_features[-length:]
 
-# ====== 10. 予測 & 元に戻す ======
+# 10. 予測
 pred_scaled = model.predict(input_seq).flatten()
 pred_diff = scaler_diff.inverse_transform(pred_scaled.reshape(-1, 1)).flatten()
 
 start_val = curr_data[-1]
 predicted = np.cumsum(np.insert(pred_diff, 0, start_val))[1:]
 
-# ====== 11. 可視化 ======
+# 11. 描画
 full_series = np.concatenate([curr_data, predicted])
 time_series = pd.date_range(start=dt_midnight, periods=len(full_series), freq='5T')
 
@@ -159,26 +153,42 @@ plt.legend()
 plt.tight_layout()
 plt.show()
 
-# ====== JSONデータ作成 ======
-json_data = [
-    {"timestamp": t.isoformat(), "predicted_co2": float(p)}
-    for t, p in zip(time_series[len(curr_data):], predicted)
-]
+# 11. 過去12時間の観測データ保存
+dt_yesterday = dt_midnight - timedelta(days=1)
+unix_yesterday = int(dt_yesterday.timestamp())
+curr_yes_data, curr_yes_times = [], []
 
-# JSON文字列にエンコード
-json_str = json.dumps(json_data).encode('utf-8')
+for ts in [unix_yesterday, unix]:
+    res = requests.get(
+        f'https://airoco.necolico.jp/data-api/day-csv?id=CgETViZ2&subscription-key=6b8aa7133ece423c836c38af01c59880&startDate={ts}')
+    raw2_data = csv.reader(res.text.strip().splitlines())
+    for row1 in raw2_data:
+        if row1[1] == 'Ｒ３ーB１Ｆ_ＥＨ':
+            try:
+                curr_yes_data.append(float(row1[3]))
+                curr_yes_times.append(datetime.strptime(row1[0], "%Y/%m/%d %H:%M:%S"))
+            except:
+                continue
 
-# ====== HTTPリクエストを準備してPOST ======
-url = "https://stunning-umbrella-5gqj5r4pq5rwc4wv5-1880.app.github.dev/predicted"  # ← あなたのNode-REDエンドポイントに書き換えてください
-headers = {"Content-Type": "application/json"}
+curr_yes_data = np.array(curr_yes_data)
+curr_yes_times = pd.to_datetime(curr_yes_times)
 
-request = urllib.request.Request(url, data=json_str, method="POST", headers=headers)
+obserd_data = curr_yes_data[-145:]
+observed_times = curr_yes_times[-145:]
 
-try:
-    with urllib.request.urlopen(request) as response:
-        response_body = response.read().decode("utf-8")
-        print("Response:", response_body)
-except urllib.error.HTTPError as e:
-    print("HTTP Error:", e.code, e.reason)
-except urllib.error.URLError as e:
-    print("URL Error:", e.reason)
+ob_15min = obserd_data[::3]
+ob_times_15min = observed_times[::3]
+
+latest_df = pd.DataFrame({
+    "timestamp": ob_times_15min.strftime("%Y/%m/%d %H:%M"),
+    "co2(ppm)": ob_15min
+})
+
+latest_df.to_csv("observed.csv", index=False, encoding="utf-8-sig")
+# 12. 予測_csv出力（CSV/JSON/可視化)
+csv_predicted = np.concatenate(([start_val], predicted))[:145][::3]
+csv_times = pd.date_range(start=dt_now, periods=len(csv_predicted), freq='15T')
+
+future_12h_df = pd.DataFrame({"timestamp": csv_times, "co2(ppm)": csv_predicted})
+future_12h_df["timestamp"] = future_12h_df["timestamp"].dt.strftime("%Y/%m/%d %H:%M")
+future_12h_df.to_csv("predicted.csv", index=False, encoding='utf-8-sig')
